@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.policies.go2_suction_policy as go2_suction_policy
 import openpi.policies.unitree_g1_policy as unitree_g1_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
@@ -262,6 +263,44 @@ class LeRobotUnitreeG1DataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotGo2SuctionDataConfig(DataConfigFactory):
+    default_prompt: str | None = None
+    use_delta_joint_actions: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform({
+                    "observation/image":             "observation.images.cam_high",
+                    "observation/left_wrist_image":  "observation.images.cam_left_wrist",
+                    "observation/right_wrist_image": "observation.images.cam_right_wrist",
+                    "observation/state":             "observation.state",
+                    "actions":                       "action",
+                }),
+            ]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[go2_suction_policy.Go2SuctionInputs(model_type=model_config.model_type)],
+            outputs=[go2_suction_policy.Go2SuctionOutputs()],
+        )
+        if self.use_delta_joint_actions:
+            delta_action_mask = _transforms.make_bool_mask(23, -1)  # 23 joints delta, suction absolute
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
         )
 
 
@@ -668,6 +707,28 @@ _CONFIGS = [
       save_interval=5000,
       keep_period=5000,
       fsdp_devices=2,
+      ema_decay=0.999,
+    ),
+    TrainConfig(
+      name="pi05_go2_suction",
+      model=pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=50,
+      ),
+      data=LeRobotGo2SuctionDataConfig(
+        repo_id="local/go2_suction_v1",
+        default_prompt="reach into the bin, attach both suction cups to the part and lift it out level",
+        base_config=DataConfig(
+            action_sequence_keys=("action",),
+        ),
+        use_delta_joint_actions=False,
+      ),
+      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+      batch_size=64,
+      num_train_steps=50000,
+      save_interval=5000,
+      keep_period=5000,
+      fsdp_devices=4,
       ema_decay=0.999,
     ),
     #
