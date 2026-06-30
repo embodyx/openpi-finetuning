@@ -13,14 +13,13 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
-import openpi.policies.go2_suction_policy as go2_suction_policy
+import openpi.policies.unitree_g1_policy as unitree_g1_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
-import openpi.policies.g1_policy as g1_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -226,18 +225,17 @@ class SimpleDataConfig(DataConfigFactory):
             model_transforms=self.model_transforms(model_config),
         )
 
-
 @dataclasses.dataclass(frozen=True)
-class LeRobotGo2SuctionDataConfig(DataConfigFactory):
-    default_prompt: str | None = None
+class LeRobotUnitreeG1DataConfig(DataConfigFactory):
     use_delta_joint_actions: bool = False
+    default_prompt: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform({
-                    "observation/image":             "observation.images.cam_high",
+                    "observation/image":             "observation.images.cam_left_high",
                     "observation/left_wrist_image":  "observation.images.cam_left_wrist",
                     "observation/right_wrist_image": "observation.images.cam_right_wrist",
                     "observation/state":             "observation.state",
@@ -245,23 +243,25 @@ class LeRobotGo2SuctionDataConfig(DataConfigFactory):
                 }),
             ]
         )
+
         data_transforms = _transforms.Group(
-            inputs=[go2_suction_policy.Go2SuctionInputs(model_type=model_config.model_type)],
-            outputs=[go2_suction_policy.Go2SuctionOutputs()],
+            inputs=[unitree_g1_policy.UnitreeG1Inputs(model_type=model_config.model_type)],
+            outputs=[unitree_g1_policy.UnitreeG1Outputs()],
         )
+
         if self.use_delta_joint_actions:
-            delta_action_mask = _transforms.make_bool_mask(23, -1)  # 23 joints delta, suction absolute
+            delta_action_mask = _transforms.make_bool_mask(14, -2)
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
+
         model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
-            action_sequence_keys=("action",),
         )
 
 
@@ -387,54 +387,6 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         model_transforms = ModelTransformFactory()(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-        )
-
-
-@dataclasses.dataclass(frozen=True)
-class LeRobotUnitreeG1DataConfig(DataConfigFactory):
-    """Data config for fine-tuning on a Unitree G1 (Dex1 bimanual) LeRobot v2.1 dataset.
-
-    The G1 dataset stores a 16-dim absolute-joint-position state/action vector and three cameras
-    (cam_left_high, cam_left_wrist, cam_right_wrist). Actions are *absolute* joint positions, so we do
-    NOT apply a delta transform (see g1_policy.py for the joint layout).
-    """
-
-    # Injected as the prompt for every sample (the dataset's tasks.jsonl is a placeholder).
-    # Must be character-identical to the prompt used at deployment time.
-    default_prompt: str | None = None
-
-    @override
-    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # Remap raw LeRobot column names to the flat keys expected by G1Inputs (and by the inference client).
-        repack_transform = _transforms.Group(
-            inputs=[
-                _transforms.RepackTransform(
-                    {
-                        "observation/cam_left_high": "observation.images.cam_left_high",
-                        "observation/cam_left_wrist": "observation.images.cam_left_wrist",
-                        "observation/cam_right_wrist": "observation.images.cam_right_wrist",
-                        "observation/state": "observation.state",
-                        "actions": "action",
-                    }
-                )
-            ]
-        )
-
-        data_transforms = _transforms.Group(
-            inputs=[g1_policy.G1Inputs(model_type=model_config.model_type)],
-            outputs=[g1_policy.G1Outputs()],
-        )
-
-        # NOTE: actions are absolute joint positions; no DeltaActions transform (deltas explode under
-        # normalization because actions ~= current state).
-
-        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
-
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
@@ -647,24 +599,53 @@ class TrainConfig:
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
     TrainConfig(
+    # Unitree G1 Dex1 bimanual pick-and-place, 16-DoF.
+    # T2 strategy: PaliGemma LoRA + Action Expert full fine-tuning.
+    # Small dataset (~20k frames, 50 eps) → smaller bs, fewer steps than UR3 5task.
       name="pi05_unitree_g1_insert_ethernet_cable",
       model=pi0_config.Pi0Config(
         pi05=True,
         action_horizon=50,
+        #discrete_state_input=False,
+        #paligemma_variant="gemma_2b",
+        #action_expert_variant="gemma_300m",
       ),
       data=LeRobotUnitreeG1DataConfig(
-        repo_id="XiaoweiLinXL/unitree_insert_the_ethernet_cable_to_the_tv_box",
+        repo_id="XiaoweiLinXL/unitree_insert_the_ethernet_cable_to_the_tv_box",  # ← fill in
         default_prompt="insert the ethernet cable into the tv box",
         base_config=DataConfig(
             action_sequence_keys=("action",),
         ),
+        use_delta_joint_actions=False,
       ),
       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+
       batch_size=64,
+      #num_workers=8,
       num_train_steps=50000,
       save_interval=5000,
       keep_period=5000,
+      #log_interval=10,
       fsdp_devices=2,
+      #wandb_enabled=True,
+      #lr_schedule=_optimizer.CosineDecaySchedule(
+      #  warmup_steps=500,
+      #  peak_lr=2.5e-5,
+      #  decay_steps=15_000,
+      #  decay_lr=2.5e-6,
+      #),
+      #optimizer=_optimizer.AdamW(
+      #  b1=0.9,
+      #  b2=0.95,
+      #  eps=1e-8,
+      #  weight_decay=1e-4,
+      #  clip_gradient_norm=1.0,
+      #),
+      #freeze_filter=pi0_config.Pi0Config(
+      #  pi05=True,
+      #  paligemma_variant="gemma_2b_lora",
+      #  action_expert_variant="gemma_300m",
+      #).get_freeze_filter(),
       ema_decay=0.999,
     ),
     TrainConfig(
@@ -679,9 +660,10 @@ _CONFIGS = [
         base_config=DataConfig(
             action_sequence_keys=("action",),
         ),
+        use_delta_joint_actions=False,
       ),
       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      batch_size=32,
+      batch_size=64,
       num_train_steps=50000,
       save_interval=5000,
       keep_period=5000,
@@ -690,13 +672,17 @@ _CONFIGS = [
     ),
     TrainConfig(
       name="pi05_unitree_g1_pick_up_the_red_bottle",
-      model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
+      model=pi0_config.Pi0Config(
+        pi05=True,
+        action_horizon=30,
+      ),
       data=LeRobotUnitreeG1DataConfig(
         repo_id="XiaoweiLinXL/pi05-unitree-g1-pick-up-the-red-bottle",
         default_prompt="Pick up the red bottle",
         base_config=DataConfig(
             action_sequence_keys=("action",),
         ),
+        use_delta_joint_actions=False,
       ),
       weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
       num_train_steps=20_000,
@@ -705,30 +691,6 @@ _CONFIGS = [
       save_interval=5000,
       keep_period=5000,
       ema_decay=0.999,
-    ),
-    TrainConfig(
-      name="pi05_go2_suction",
-      model=pi0_config.Pi0Config(
-        pi05=True,
-        action_horizon=50,
-      ),
-      data=LeRobotGo2SuctionDataConfig(
-        repo_id="local/go2_suction_extract_replay_v1_head3",
-        default_prompt="reach into the bin, attach both suction cups to the part and lift it out level",
-        base_config=DataConfig(
-            action_sequence_keys=("action",),
-        ),
-        use_delta_joint_actions=False,
-      ),
-      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      batch_size=32,
-      num_workers=8,
-      num_train_steps=50000,
-      save_interval=5000,
-      keep_period=5000,
-      fsdp_devices=4,
-      ema_decay=0.999,
-      wandb_enabled=True,
     ),
     #
     # Inference Aloha configs.
@@ -932,55 +894,6 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
-    ),
-    #
-    # Fine-tuning Unitree G1 configs.
-    #
-    # Fine-tunes pi0.5 on a Unitree G1 (Dex1 bimanual) LeRobot v2.1 dataset.
-    # See g1_policy.py / LeRobotUnitreeG1DataConfig for the data mapping. Norm stats use a min/max
-    # override (see scripts comment / norm_stats.json) so normalized actions stay bounded to ~[-1, 1];
-    # plain quantile norm leaves rare wrist-joint extensions at absmax ~4 and degrades deployment.
-    TrainConfig(
-      name="pi05_unitree_g1_put_away_tools_v3",
-      model=pi0_config.Pi0Config(
-        pi05=True,
-        action_horizon=50,
-      ),
-      data=LeRobotUnitreeG1DataConfig(
-        repo_id="XiaoweiLinXL/put-away-tools-v3",
-        default_prompt="put the battery into the battery bin and the screw driver into the philips bin",
-        base_config=DataConfig(
-            action_sequence_keys=("action",),
-        ),
-      ),
-      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      batch_size=32,
-      num_train_steps=50000,
-      save_interval=5000,
-      keep_period=5000,
-      fsdp_devices=2,
-      ema_decay=0.999,
-    ),
-    # Single-object Unitree G1 pick task. Reuses the same G1 transforms; norm stats use plain quantile
-    # (q01/q99) here -- this dataset's action absmax under quantile is only ~2.0, so quantile preserves
-    # joint resolution without the absmax blow-up that forced min/max on the put-away-tools dataset.
-    TrainConfig(
-      name="pi05_unitree_g1_pick_up_the_red_bottle",
-      model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
-      data=LeRobotUnitreeG1DataConfig(
-        repo_id="XiaoweiLinXL/pi05-unitree-g1-pick-up-the-red-bottle",
-        default_prompt="Pick up the red bottle",
-        base_config=DataConfig(
-            action_sequence_keys=("action",),
-        ),
-      ),
-      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      num_train_steps=20_000,
-      batch_size=32,
-      fsdp_devices=2,
-      save_interval=5000,
-      keep_period=5000,
-      ema_decay=0.999,
     ),
     #
     # Fine-tuning Aloha configs.
