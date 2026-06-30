@@ -668,45 +668,6 @@ _CONFIGS = [
       ema_decay=0.999,
     ),
     TrainConfig(
-      name="pi05_unitree_g1_put_away_tools_v3",
-      model=pi0_config.Pi0Config(
-        pi05=True,
-        action_horizon=50,
-      ),
-      data=LeRobotUnitreeG1DataConfig(
-        repo_id="XiaoweiLinXL/put-away-tools-v3",
-        default_prompt="put the battery into the battery bin and the screw driver into the philips bin",
-        base_config=DataConfig(
-            action_sequence_keys=("action",),
-        ),
-      ),
-      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      batch_size=32,
-      num_train_steps=50000,
-      save_interval=5000,
-      keep_period=5000,
-      fsdp_devices=2,
-      ema_decay=0.999,
-    ),
-    TrainConfig(
-      name="pi05_unitree_g1_pick_up_the_red_bottle",
-      model=pi0_config.Pi0Config(pi05=True, action_horizon=30),
-      data=LeRobotUnitreeG1DataConfig(
-        repo_id="XiaoweiLinXL/pi05-unitree-g1-pick-up-the-red-bottle",
-        default_prompt="Pick up the red bottle",
-        base_config=DataConfig(
-            action_sequence_keys=("action",),
-        ),
-      ),
-      weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-      num_train_steps=20_000,
-      batch_size=32,
-      fsdp_devices=2,
-      save_interval=5000,
-      keep_period=5000,
-      ema_decay=0.999,
-    ),
-    TrainConfig(
       name="pi05_go2_suction",
       model=pi0_config.Pi0Config(
         pi05=True,
